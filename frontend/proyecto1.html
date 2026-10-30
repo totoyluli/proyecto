@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Contador de dedos en tiempo real</title>
+  
+  <!-- Cargar librerías de MediaPipe -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script> 
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script> 
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #1a1a1a;
+      color: white;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+
+    h1 {
+      margin-bottom: 10px;
+    }
+
+    .container {
+      position: relative;
+      width: 640px;
+      height: 480px;
+    }
+
+    video, canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 640px;
+      height: 480px;
+      border-radius: 12px;
+      transform: scaleX(-1);
+    }
+
+    .contador {
+      margin-top: 20px;
+      font-size: 2rem;
+      font-weight: bold;
+      background: #333;
+      padding: 10px 25px; 
+      border-radius: 8px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);   
+    }
+
+    #avisoCamara {
+      max-width: 640px;
+      margin-top: 16px;
+      padding: 12px 16px;
+      border: 1px solid #f87171;
+      border-radius: 8px;
+      background: #3b1717;
+      color: #fee2e2;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Detector de Dedos Levantados</h1>
+  
+  <div class="container">
+    <video id="webcam" autoplay playsinline></video>
+    <canvas id="output_canvas"></canvas>
+  </div>
+
+  <div class="contador" id="contador">Dedos: 0</div>
+  <div id="avisoCamara" role="alert" aria-live="polite" hidden></div>
+
+  <script>
+    const videoElement = document.getElementById('webcam'); 
+    const canvasElement = document.getElementById('output_canvas'); 
+    const canvasCtx = canvasElement.getContext('2d'); 
+    const contadorElement = document.getElementById('contador'); 
+
+    // Mapeo de landmarks para los 4 dedos superiores
+    const PUNTAS_DE_LOS_DEDOS = [ 
+      { nombre: 'Índice', punta: 8, pip: 6 },    
+      { nombre: 'Medio', punta: 12, pip: 10 },    
+      { nombre: 'Anular', punta: 16, pip: 14 },    
+      { nombre: 'Meñique', punta: 20, pip: 18 }    
+    ];
+    
+    // Puntos para el pulgar
+    const THUMB_TIP = 4; 
+    const THUMB_IP = 3; 
+
+    function onResults(results) { 
+      canvasElement.width = videoElement.videoWidth; 
+      canvasElement.height = videoElement.videoHeight; 
+
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      let totalDedos = 0;   
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {   
+        for (let i = 0; i < results.multiHandLandmarks.length; i++) {     
+          const landmarks = results.multiHandLandmarks[i];   
+          const handedness = results.multiHandedness[i].label; // "Left" o "Right"   
+
+          // 1. Contar los 4 dedos (la coordenada Y disminuye hacia arriba)
+          PUNTAS_DE_LOS_DEDOS.forEach(dedo => { 
+            if (landmarks[dedo.punta].y < landmarks[dedo.pip].y) { 
+              totalDedos++;
+            }
+          });
+
+          // 2. Lógica para el Pulgar (eje X invertido por el espejo CSS)
+          if (handedness === 'Right') {  
+            if (landmarks[THUMB_TIP].x < landmarks[THUMB_IP].x) totalDedos++; 
+          } else {
+            if (landmarks[THUMB_TIP].x > landmarks[THUMB_IP].x) totalDedos++; 
+          }
+
+          dibujarPuntosDeVista(landmarks);
+        }
+      }
+
+      contadorElement.innerText = `Dedos: ${totalDedos}`;   
+      canvasCtx.restore();
+    }
+
+    function dibujarPuntosDeVista(landmarks) { 
+      for (const punto of landmarks) {   
+        const x = punto.x * canvasElement.width;    
+        const y = punto.y * canvasElement.height;    
+
+        canvasCtx.beginPath();
+        canvasCtx.arc(x, y, 5, 0, 2 * Math.PI);   
+        canvasCtx.fillStyle = '#00FF00'; 
+        canvasCtx.fill();
+      }
+    }
+
+    // Configuración de MediaPipe Hands (en inglés)
+    const hands = new Hands({  
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` 
+    });
+
+    hands.setOptions({
+      maxNumHands: 1, 
+      modelComplexity: 1, 
+      minDetectionConfidence: 0.7, 
+      minTrackingConfidence: 0.7 
+    });
+
+    hands.onResults(onResults);
+
+    const camera = new Camera(videoElement, {  
+      onFrame: async () => { 
+        await hands.send({ image: videoElement });  
+      },
+      width: 640, 
+      height: 480 
+    });
+
+    function mostrarErrorCamara(error) {
+      const avisoCamara = document.getElementById('avisoCamara');
+      let mensaje;
+
+      if (!window.isSecureContext) {
+        mensaje = 'El navegador bloqueó la cámara porque esta página no está en un contexto seguro. '
+          + 'Abrí la dirección HTTPS y verificá que el certificado sea válido y confiable en este celular.';
+      } else if (!navigator.mediaDevices?.getUserMedia) {
+        mensaje = 'Este navegador no ofrece acceso a la cámara en esta página. Probá con una versión actualizada de Chrome.';
+      } else if (error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError') {
+        mensaje = 'No se concedió permiso para usar la cámara. Habilitalo para este sitio desde los ajustes del navegador y volvé a cargar la página.';
+      } else if (error?.name === 'NotFoundError' || error?.name === 'DevicesNotFoundError') {
+        mensaje = 'No se encontró una cámara disponible en este dispositivo.';
+      } else if (error?.name === 'NotReadableError' || error?.name === 'TrackStartError') {
+        mensaje = 'La cámara está ocupada o no se pudo iniciar. Cerrá otras aplicaciones que la estén usando e intentá de nuevo.';
+      } else {
+        mensaje = `No se pudo iniciar la cámara${error?.message ? `: ${error.message}` : '.'}`;
+      }
+
+      avisoCamara.textContent = mensaje;
+      avisoCamara.hidden = false;
+      contadorElement.innerText = 'Cámara no disponible';
+      console.error('Error al iniciar la cámara:', error);
+    }
+
+    async function iniciarCamara() {
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        mostrarErrorCamara();
+        return;
+      }
+
+      try {
+        await camera.start();
+      } catch (error) {
+        mostrarErrorCamara(error);
+      }
+    }
+
+    iniciarCamara();
+  </script>
+</body>
+</html>

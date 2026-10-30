@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Traductor de Lenguaje de Señas con ESP32</title>
+
+  <!-- MediaPipe Utilities y Hands -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <!-- ml5.js para Clasificador KNN -->
+  <script src="https://unpkg.com/ml5@0.12.2/dist/ml5.min.js"></script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #121212;
+      color: #e0e0e0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+      min-height: 100vh;
+    }
+
+    h1 {
+      margin-bottom: 20px;
+      font-size: 1.8rem;
+      color: #ffffff;
+      text-align: center;
+    }
+
+    .panel-arduino, .panel-modelo {
+      background: #1e1e1e;
+      padding: 12px 20px;
+      border-radius: 8px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 15px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .main-layout {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      justify-content: center;
+      max-width: 1050px;
+      width: 100%;
+    }
+
+    .video-container {
+      position: relative;
+      width: 640px;
+      height: 480px;
+      background-color: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    }
+
+    #avisoCamara {
+      max-width: 980px;
+      margin: 0 0 16px;
+      padding: 12px 16px;
+      border: 1px solid #f87171;
+      border-radius: 8px;
+      background: #3b1717;
+      color: #fee2e2;
+    }
+
+    video, canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      transform: scaleX(-1);
+    }
+
+    .panel {
+      background: #1e1e1e;
+      padding: 20px;
+      border-radius: 12px;
+      width: 320px;
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+
+    .output-box {
+      background: #2a2a2a;
+      padding: 15px;
+      border-radius: 8px;
+      text-align: center;
+    }
+
+    .letra-detectada {
+      font-size: 2.8rem;
+      font-weight: bold;
+      color: #00ff88;
+      margin: 5px 0;
+    }
+
+    #confianza {
+      font-size: 0.9rem;
+      color: #aaa;
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+    }
+
+    input[type="text"] {
+      width: 60px;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #444;
+      background: #333;
+      color: #fff;
+      font-size: 1.1rem;
+      text-transform: uppercase;
+      text-align: center;
+    }
+
+    button {
+      padding: 10px 15px;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: white;
+      cursor: pointer;
+      transition: background-color 0.2s ease, transform 0.1s ease, opacity 0.2s ease;
+    }
+
+    button:hover:not(:disabled) { opacity: 0.9; }
+    button:active:not(:disabled) { transform: scale(0.98); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    #btnConectarUsb { background-color: #e67e22; }
+    #btnConectarBt { background-color: #38bdf8; color: #0b1220; }
+    #btnDesconectar { background-color: #dc3545; }
+    #btnEntrenar { background-color: #007bff; flex-grow: 1; }
+    #btnGuardarModelo { background-color: #28a745; }
+    #btnCargarModelo { background-color: #17a2b8; }
+    #btnGuardarBD { background-color: #8e44ad; } /* Nuevo Botón BD */
+    #btnEspacio { background-color: #6c757d; flex: 1; }
+    #btnBorrar { background-color: #dc3545; flex: 1; }
+    #btnLimpiar { background-color: #ffc107; color: #111; flex: 1; }
+
+    #muestras-info {
+      font-size: 0.85rem;
+      color: #bbb;
+      max-height: 120px;
+      overflow-y: auto;
+      background: #252525;
+      padding: 8px;
+      border-radius: 6px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>Reconocimiento de Señas en Tiempo Real</h1>
+
+  <!-- CONEXIÓN -->
+  <div class="panel-arduino">
+    <button id="btnConectarUsb">Conectar USB</button>
+    <button id="btnConectarBt">Conectar ESP32</button>
+    <button id="btnDesconectar" disabled>Desconectar</button>
+    <span id="estadoArduino" style="color: #f87171; font-size: 14px; font-weight: bold;">
+      Desconectado
+    </span>
+  </div>
+
+  <!-- MODELO -->
+  <div class="panel-modelo">
+    <button id="btnGuardarModelo">Descargar Local</button>
+    <button id="btnCargarModelo">Cargar Local</button>
+    <!-- Botón para enviar al backend Node.js -->
+    <button id="btnGuardarBD">Guardar en BD (Nube)</button> 
+    <input type="file" id="inputArchivoJson" accept=".json" style="display: none;" />
+    <span id="estadoCarga" style="font-weight: bold; font-size: 14px;"></span>
+  </div>
+
+  <div id="avisoCamara" role="alert" aria-live="polite" hidden></div>
+
+  <!-- CONTENIDO PRINCIPAL -->
+  <div class="main-layout">
+    <div class="video-container">
+      <video id="webcam" autoplay playsinline muted></video>
+      <canvas id="output_canvas"></canvas>
+    </div>
+
+    <div class="panel">
+      <!-- RESULTADO -->
+      <div class="output-box">
+        <div>Traducción:</div>
+        <div class="letra-detectada" id="resultado">--</div>
+        <div id="confianza">Esperando mano...</div>
+      </div>
+
+      <!-- TEXTO -->
+      <div class="output-box">
+        <div>Texto Construido:</div>
+        <div id="textoOracion" style="font-size: 1.5rem; color: #ffcc00; min-height: 35px; margin: 10px 0;"></div>
+        <div style="display: flex; gap: 5px;">
+          <button id="btnEspacio">Espacio</button>
+          <button id="btnBorrar">Borrar</button>
+          <button id="btnLimpiar">Limpiar</button>
+        </div>
+      </div>
+
+      <hr style="border-color: #444; width: 100%;">
+
+      <!-- ENTRENAMIENTO -->
+      <h3>Entrenamiento en vivo</h3>
+      <div class="controls">
+        <input type="text" id="letraInput" maxlength="1" placeholder="Ej: A">
+        <button id="btnEntrenar">Guardar Seña</button>
+      </div>
+
+      <div id="muestras-info">
+        Muestras guardadas: 0
+      </div>
+    </div>
+  </div>
+
+  <!-- JAVASCRIPT -->
+  <script>
+    // ELEMENTOS HTML
+    const videoElement = document.getElementById('webcam');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+
+    const resultadoEl = document.getElementById('resultado');
+    const confianzaEl = document.getElementById('confianza');
+    const letraInput = document.getElementById('letraInput');
+    const btnEntrenar = document.getElementById('btnEntrenar');
+    const muestrasInfo = document.getElementById('muestras-info');
+
+    const textoOracionEl = document.getElementById('textoOracion');
+    const btnEspacio = document.getElementById('btnEspacio');
+    const btnBorrar = document.getElementById('btnBorrar');
+    const btnLimpiar = document.getElementById('btnLimpiar');
+
+    const btnConectarUsb = document.getElementById('btnConectarUsb');
+    const btnConectarBt = document.getElementById('btnConectarBt');
+    const btnDesconectar = document.getElementById('btnDesconectar');
+    const estadoArduino = document.getElementById('estadoArduino');
+
+    const btnGuardarModelo = document.getElementById('btnGuardarModelo');
+    const btnCargarModelo = document.getElementById('btnCargarModelo');
+    const btnGuardarBD = document.getElementById('btnGuardarBD'); // Nuevo elemento
+    const inputArchivoJson = document.getElementById('inputArchivoJson');
+    const estadoCarga = document.getElementById('estadoCarga');
+
+    // MODELO KNN
+    let knn = ml5.KNNClassifier();
+    let ultimosLandmarks = null;
+    let contadorMuestras = {};
+    let isClassifying = false;
+    let muestrasGuardadas = {};
+    let textoAcumulado = "";
+    let letraCandidata = null;
+    let tiempoInicioEstado = 0;
+
+    const TIEMPO_REQUERIDO_MS = 1000;
+    const UMBRAL_CONFIANZA = 0.70;
+
+    // BLUETOOTH BLE DEL ESP32
+    const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+    const RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+    const TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+
+    let esp32Device = null;
+    let esp32Server = null;
+    let rxCharacteristic = null;
+    let txCharacteristic = null;
+
+    // USB / SERIAL
+    let serialPort = null;
+    let serialReader = null;
+    let serialConnected = false;
+    const SERIAL_BAUD_RATE = 115200;
+
+    const tieneUSB = "serial" in navigator;
+    const tieneBluetooth = "bluetooth" in navigator;
+
+    if (!tieneUSB) btnConectarUsb.style.display = "none";
+
+    function actualizarEstadoConexion(texto, color = "#f87171") {
+      estadoArduino.innerText = texto;
+      estadoArduino.style.color = color;
+    }
+
+    function actualizarBotonesConexion(conectado) {
+      btnDesconectar.disabled = !conectado;
+      btnConectarUsb.disabled = conectado;
+      btnConectarBt.disabled = conectado;
+    }
+
+    // CONECTAR USB
+    btnConectarUsb.addEventListener('click', async () => {
+      if (!tieneUSB) {
+        alert("Este navegador no permite conexión USB. Usá Chrome o Edge vía HTTPS o localhost.");
+        return;
+      }
+
+      try {
+        if (esp32Device && esp32Device.gatt && esp32Device.gatt.connected) {
+          esp32Device.gatt.disconnect();
+        }
+
+        actualizarEstadoConexion("Seleccioná el ESP32...", "#e67e22");
+        serialPort = await navigator.serial.requestPort();
+
+        await serialPort.open({ baudRate: SERIAL_BAUD_RATE });
+        serialConnected = true;
+
+        actualizarEstadoConexion("✔ Conectado por USB", "#00ff88");
+        actualizarBotonesConexion(true);
+
+        leerSerial();
+      } catch (error) {
+        console.error("Error USB:", error);
+        serialConnected = false;
+        serialPort = null;
+        actualizarEstadoConexion("✖ Error de conexión");
+        actualizarBotonesConexion(false);
+      }
+    });
+
+    async function leerSerial() {
+      if (!serialPort || !serialPort.readable) return;
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      serialReader = serialPort.readable.getReader();
+
+      try {
+        while (serialConnected) {
+          const { value, done } = await serialReader.read();
+          if (done) break;
+
+          if (value) {
+            buffer += decoder.decode(value, { stream: true });
+            const lineas = buffer.split("\n");
+            buffer = lineas.pop();
+
+            for (const linea of lineas) {
+              const mensaje = linea.trim();
+              if (mensaje.length > 0) console.log("ESP32 USB:", mensaje);
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error leyendo USB:", error);
+      } finally {
+        try { serialReader.releaseLock(); } catch (e) {}
+        serialReader = null;
+      }
+    }
+
+    // CONECTAR BLUETOOTH
+    btnConectarBt.addEventListener('click', async () => {
+      await conectarESP32();
+    });
+
+    async function conectarESP32() {
+      try {
+        if (!tieneBluetooth) {
+          alert("Este navegador no permite Web Bluetooth.");
+          return;
+        }
+
+        if (serialConnected) await desconectarUSB();
+
+        actualizarEstadoConexion("Buscando ESP32...", "#38bdf8");
+
+        esp32Device = await navigator.bluetooth.requestDevice({
+          filters: [{ name: "ESP32-NUS" }],
+          optionalServices: [SERVICE_UUID]
+        });
+
+        actualizarEstadoConexion("Conectando al ESP32...", "#38bdf8");
+        esp32Server = await esp32Device.gatt.connect();
+
+        const service = await esp32Server.getPrimaryService(SERVICE_UUID);
+        rxCharacteristic = await service.getCharacteristic(RX_UUID);
+
+        try {
+          txCharacteristic = await service.getCharacteristic(TX_UUID);
+          await txCharacteristic.startNotifications();
+          txCharacteristic.addEventListener("characteristicvaluechanged", recibirDesdeESP32);
+        } catch (error) {
+          console.warn("No se pudo activar TX:", error);
+        }
+
+        esp32Device.addEventListener("gattserverdisconnected", esp32Desconectado);
+
+        actualizarEstadoConexion("✔ ESP32 conectado", "#00ff88");
+        actualizarBotonesConexion(true);
+      } catch (error) {
+        console.error("Error Bluetooth:", error);
+        actualizarEstadoConexion("✖ Error Bluetooth");
+        actualizarBotonesConexion(false);
+      }
+    }
+
+    function esp32Desconectado() {
+      esp32Server = null;
+      rxCharacteristic = null;
+      txCharacteristic = null;
+      actualizarEstadoConexion("✖ ESP32 desconectado");
+      actualizarBotonesConexion(false);
+    }
+
+    function recibirDesdeESP32(event) {
+      try {
+        const decoder = new TextDecoder();
+        console.log("ESP32 BLE:", decoder.decode(event.target.value));
+      } catch (error) {
+        console.error("Error recibiendo BLE:", error);
+      }
+    }
+
+    // ENVIAR A ESP32
+    async function enviarUSB(mensaje) {
+      if (!serialConnected || !serialPort || !serialPort.writable || serialPort.writable.locked) return false;
+      let writer = null;
+      try {
+        writer = serialPort.writable.getWriter();
+        const encoder = new TextEncoder();
+        await writer.write(encoder.encode(mensaje + "\n"));
+        return true;
+      } catch (error) {
+        console.error("Error enviando USB:", error);
+        return false;
+      } finally {
+        if (writer) {
+          try { writer.releaseLock(); } catch (e) {}
+        }
+      }
+    }
+
+    async function enviarBluetooth(mensaje) {
+      if (!rxCharacteristic) return false;
+      try {
+        const encoder = new TextEncoder();
+        const datos = encoder.encode(mensaje + "\n");
+        const tamañoPaquete = 20;
+
+        for (let i = 0; i < datos.length; i += tamañoPaquete) {
+          const paquete = datos.slice(i, i + tamañoPaquete);
+          if (rxCharacteristic.properties && rxCharacteristic.properties.writeWithoutResponse) {
+            await rxCharacteristic.writeValueWithoutResponse(paquete);
+          } else {
+            await rxCharacteristic.writeValueWithResponse(paquete);
+          }
+        }
+        return true;
+      } catch (error) {
+        console.error("Error enviando BLE:", error);
+        return false;
+      }
+    }
+
+    async function enviarAlESP32(texto) {
+      const comando = "LCD:" + texto;
+      if (serialConnected) return await enviarUSB(comando);
+      if (rxCharacteristic) return await enviarBluetooth(comando);
+      return false;
+    }
+
+    async function desconectarUSB() {
+      serialConnected = false;
+      try {
+        if (serialReader) await serialReader.cancel();
+      } catch (error) { console.warn(error); }
+      serialReader = null;
+
+      try {
+        if (serialPort) await serialPort.close();
+      } catch (error) { console.warn(error); }
+      serialPort = null;
+    }
+
+    btnDesconectar.addEventListener('click', async () => {
+      try {
+        if (serialConnected) await desconectarUSB();
+        if (esp32Device && esp32Device.gatt && esp32Device.gatt.connected) {
+          esp32Device.gatt.disconnect();
+        }
+        esp32Device = null;
+        esp32Server = null;
+        rxCharacteristic = null;
+        txCharacteristic = null;
+        actualizarEstadoConexion("✖ Desconectado");
+        actualizarBotonesConexion(false);
+      } catch (error) {
+        console.error("Error desconectando:", error);
+      }
+    });
+
+    // DIBUJAR PUNTOS
+    function dibujarMano(landmarks) {
+      const conexiones = [
+        [0,1],[1,2],[2,3],[3,4],
+        [0,5],[5,6],[6,7],[7,8],
+        [5,9],[9,10],[10,11],[11,12],
+        [9,13],[13,14],[14,15],[15,16],
+        [13,17],[17,18],[18,19],[19,20],[0,17]
+      ];
+
+      canvasCtx.strokeStyle = '#00ff88';
+      canvasCtx.lineWidth = 3;
+
+      conexiones.forEach(([i, j]) => {
+        const p1 = landmarks[i];
+        const p2 = landmarks[j];
+        canvasCtx.beginPath();
+        canvasCtx.moveTo(p1.x * canvasElement.width, p1.y * canvasElement.height);
+        canvasCtx.lineTo(p2.x * canvasElement.width, p2.y * canvasElement.height);
+        canvasCtx.stroke();
+      });
+
+      landmarks.forEach(pt => {
+        canvasCtx.fillStyle = '#ff0055';
+        canvasCtx.beginPath();
+        canvasCtx.arc(pt.x * canvasElement.width, pt.y * canvasElement.height, 5, 0, 2 * Math.PI);
+        canvasCtx.fill();
+      });
+    }
+
+    // PROCESAMIENTO DE IMAGEN
+    function onResults(results) {
+      if (videoElement.videoWidth > 0 && canvasElement.width !== videoElement.videoWidth) {
+        canvasElement.width = videoElement.videoWidth;
+        canvasElement.height = videoElement.videoHeight;
+      }
+
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const landmarks = results.multiHandLandmarks[0];
+        ultimosLandmarks = normalizarCoordenadas(landmarks);
+        dibujarMano(landmarks);
+
+        if (knn.getNumLabels() > 0 && !isClassifying) {
+          clasificarSeña(ultimosLandmarks);
+        }
+      } else {
+        ultimosLandmarks = null;
+        letraCandidata = null;
+        resultadoEl.innerText = '--';
+        confianzaEl.innerText = 'Esperando mano...';
+      }
+
+      canvasCtx.restore();
+    }
+
+    // NORMALIZAR COORDENADAS
+    function normalizarCoordenadas(landmarks) {
+      const muñeca = landmarks[0];
+      const nudilloMedio = landmarks[9];
+
+      const tamañoMano = Math.sqrt(
+        Math.pow(nudilloMedio.x - muñeca.x, 2) +
+        Math.pow(nudilloMedio.y - muñeca.y, 2) +
+        Math.pow(nudilloMedio.z - muñeca.z, 2)
+      ) || 1;
+
+      const vector = [];
+
+      for (const pt of landmarks) {
+        vector.push((pt.x - muñeca.x) / tamañoMano);
+        vector.push((pt.y - muñeca.y) / tamañoMano);
+        vector.push((pt.z - muñeca.z) / tamañoMano);
+      }
+
+      return vector;
+    }
+
+    // CLASIFICAR SEÑA
+    function clasificarSeña(features) {
+      isClassifying = true;
+
+      const totalMuestras = Object.values(contadorMuestras).reduce((a, b) => a + b, 0);
+      if (totalMuestras === 0) {
+        isClassifying = false;
+        return;
+      }
+
+      const k = Math.min(3, Math.max(1, totalMuestras));
+
+      try {
+        knn.classify(features, k, (err, result) => {
+          if (err) {
+            console.error("Error al clasificar:", err);
+            isClassifying = false;
+            return;
+          }
+
+          if (result && result.label) {
+            const letraActual = result.label;
+            const confianzas = result.confidencesByLabel || {};
+            const confianza = confianzas[letraActual] || 0;
+
+            resultadoEl.innerText = letraActual;
+            // Corrección aplicada aquí para calcular porcentaje correctamente
+            confianzaEl.innerText = `Confianza: ${(confianza * 100).toFixed(0)}%`;
+
+            if (confianza >= UMBRAL_CONFIANZA) {
+              const ahora = Date.now();
+
+              if (letraActual !== letraCandidata) {
+                letraCandidata = letraActual;
+                tiempoInicioEstado = ahora;
+              } else {
+                if (ahora - tiempoInicioEstado >= TIEMPO_REQUERIDO_MS) {
+                  textoAcumulado += letraActual;
+                  actualizarTextoUI();
+                  enviarAlESP32(textoAcumulado);
+                  letraCandidata = null;
+                }
+              }
+            } else {
+              letraCandidata = null;
+            }
+          }
+
+          isClassifying = false;
+        });
+      } catch (error) {
+        console.error("Error ejecutando KNN:", error);
+        isClassifying = false;
+      }
+    }
+
+    // ENTRENAMIENTO
+    btnEntrenar.addEventListener('click', () => {
+      const letra = letraInput.value.trim().toUpperCase();
+
+      if (!letra) {
+        alert('Escribe una letra primero.');
+        return;
+      }
+
+      if (!ultimosLandmarks) {
+        alert('No se detecta ninguna mano.');
+        return;
+      }
+
+      knn.addExample(ultimosLandmarks, letra);
+
+      if (!muestrasGuardadas[letra]) {
+        muestrasGuardadas[letra] = [];
+      }
+      muestrasGuardadas[letra].push(ultimosLandmarks);
+
+      contadorMuestras[letra] = (contadorMuestras[letra] || 0) + 1;
+      actualizarPanelMuestras();
+    });
+
+    function actualizarTextoUI() {
+      textoOracionEl.innerText = textoAcumulado;
+    }
+
+    function actualizarPanelMuestras() {
+      let texto = '<b>Muestras registradas:</b><br>';
+      for (const [letra, num] of Object.entries(contadorMuestras)) {
+        texto += `Letra ${letra}: ${num} capturas<br>`;
+      }
+      muestrasInfo.innerHTML = texto;
+    }
+
+    // CONTROL DE TEXTO
+    btnEspacio.addEventListener('click', () => {
+      textoAcumulado += " ";
+      actualizarTextoUI();
+      enviarAlESP32(textoAcumulado);
+    });
+
+    btnBorrar.addEventListener('click', () => {
+      textoAcumulado = textoAcumulado.slice(0, -1);
+      actualizarTextoUI();
+      enviarAlESP32(textoAcumulado);
+    });
+
+    btnLimpiar.addEventListener('click', () => {
+      textoAcumulado = "";
+      actualizarTextoUI();
+      enviarAlESP32(textoAcumulado);
+    });
+
+    // GUARDAR MODELO LOCAL
+    btnGuardarModelo.addEventListener('click', () => {
+      if (!muestrasGuardadas || Object.keys(muestrasGuardadas).length === 0) {
+        alert('No hay ninguna muestra entrenada para guardar.');
+        return;
+      }
+
+      try {
+        const jsonString = JSON.stringify(muestrasGuardadas, null, 2);
+        const blob = new Blob([jsonString], { type: 'application/json' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'modelo_senas.json';
+        link.click();
+        URL.revokeObjectURL(link.href);
+      } catch (err) {
+        console.error("Error al guardar:", err);
+        alert("Ocurrió un error al exportar el archivo.");
+      }
+    });
+
+    // CARGAR MODELO LOCAL
+    btnCargarModelo.addEventListener('click', () => {
+      inputArchivoJson.value = "";
+      inputArchivoJson.click();
+    });
+
+    inputArchivoJson.addEventListener('change', (e) => {
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
+
+      estadoCarga.innerText = "Cargando...";
+      estadoCarga.style.color = "#ffc107";
+
+      const reader = new FileReader();
+
+      reader.onload = (event) => {
+        try {
+          const datosCargados = JSON.parse(event.target.result);
+
+          if (typeof datosCargados !== 'object' || Array.isArray(datosCargados)) {
+            throw new Error("Estructura de JSON no válida.");
+          }
+
+          const letras = Object.keys(datosCargados);
+          if (letras.length === 0) {
+            throw new Error("El archivo no contiene letras o señas registradas.");
+          }
+
+          if (typeof knn.clearAllLabels === 'function') {
+            knn.clearAllLabels();
+          } else {
+            knn = ml5.KNNClassifier();
+          }
+
+          muestrasGuardadas = datosCargados;
+          contadorMuestras = {};
+          let totalMuestras = 0;
+
+          letras.forEach((letra) => {
+            const ejemplos = datosCargados[letra];
+            if (Array.isArray(ejemplos)) {
+              contadorMuestras[letra] = ejemplos.length;
+              ejemplos.forEach((vector) => {
+                knn.addExample(vector, letra);
+                totalMuestras++;
+              });
+            }
+          });
+
+          if (totalMuestras === 0) {
+            throw new Error("No se encontraron muestras dentro del archivo.");
+          }
+
+          actualizarPanelMuestras();
+          estadoCarga.innerText = `✔ Modelo cargado (${letras.length} letras, ${totalMuestras} muestras)`;
+          estadoCarga.style.color = "#00ff88";
+
+        } catch (err) {
+          console.error("Error al procesar el JSON:", err);
+          estadoCarga.innerText = "✖ Archivo incompatible";
+          estadoCarga.style.color = "#f87171";
+          alert("El archivo seleccionado no es válido o está vacío.");
+        }
+      };
+
+      reader.readAsText(files[0]);
+    });
+
+    // GUARDAR EN BASE DE DATOS (NUEVA FUNCIÓN)[cite: 3, 4]
+    btnGuardarBD.addEventListener('click', async () => {
+      if (!muestrasGuardadas || Object.keys(muestrasGuardadas).length === 0) {
+        alert('No hay ninguna muestra entrenada para enviar a la base de datos.');
+        return;
+      }
+
+      estadoCarga.innerText = "Enviando a Base de Datos...";
+      estadoCarga.style.color = "#38bdf8";
+      
+      let fallos = 0;
+      let exitos = 0;
+
+      try {
+        // Bucle for para iterar sobre las letras y enviar cada matriz[cite: 3, 4]
+        for (const letra in muestrasGuardadas) {
+          for (const vector of muestrasGuardadas[letra]) {
+            const payload = {
+              id_modelo: 1, // Se asume ID 1 temporalmente 
+              etiqueta_letra: letra,
+              vector_landmarks: vector
+            };
+
+            const respuesta = await fetch('http://localhost:3000/api/guardar-muestra', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+
+            if (respuesta.ok) exitos++;
+            else fallos++;
+          }
+        }
+
+        if (fallos === 0) {
+          estadoCarga.innerText = `✔ ${exitos} muestras guardadas en BD`;
+          estadoCarga.style.color = "#00ff88";
+        } else {
+          estadoCarga.innerText = `⚠ Guardado con ${fallos} errores`;
+          estadoCarga.style.color = "#ffc107";
+        }
+
+      } catch (error) {
+        console.error("Error al conectar con la BD:", error);
+        estadoCarga.innerText = "✖ Error de servidor (BD)";
+        estadoCarga.style.color = "#f87171";
+      }
+    });
+
+    // INICIALIZACIÓN DE MEDIAPIPE Y WEBCAM
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.7
+    });
+
+    hands.onResults(onResults);
+
+    const camera = new Camera(videoElement, {
+      onFrame: async () => {
+        await hands.send({ image: videoElement });
+      },
+      width: 640,
+      height: 480
+    });
+
+    function mostrarErrorCamara(error) {
+      const avisoCamara = document.getElementById('avisoCamara');
+      let mensaje;
+
+      if (!window.isSecureContext) {
+        mensaje = 'El navegador bloqueó la cámara porque esta página no está en un contexto seguro. Abrí la dirección HTTPS.';
+      } else if (!navigator.mediaDevices?.getUserMedia) {
+        mensaje = 'Este navegador no ofrece acceso a la cámara. Probá con Chrome.';
+      } else if (error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError') {
+        mensaje = 'No se concedió permiso para usar la cámara.';
+      } else if (error?.name === 'NotFoundError') {
+        mensaje = 'No se encontró una cámara disponible.';
+      } else {
+        mensaje = `No se pudo iniciar la cámara${error?.message ? `: ${error.message}` : '.'}`;
+      }
+
+      avisoCamara.textContent = mensaje;
+      avisoCamara.hidden = false;
+      confianzaEl.innerText = 'Cámara no disponible';
+    }
+
+    async function iniciarCamara() {
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        mostrarErrorCamara();
+        return;
+      }
+      try {
+        await camera.start();
+      } catch (error) {
+        mostrarErrorCamara(error);
+      }
+    }
+
+    iniciarCamara();
+  </script>
+</body>
+</html>
